@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import handler from '../api/lead.js';
 execFileSync(process.execPath,['scripts/build.mjs']);
 const read=path=>readFileSync(`site/${path}`,'utf8');
@@ -24,15 +25,18 @@ test('páginas têm H1, metadados, dados estruturados válidos e links internos 
 });
 test('formulário envia somente lead válido ao webhook configurado',async()=>{
   const previous=process.env.LEAD_WEBHOOK_URL;
-  process.env.LEAD_WEBHOOK_URL='https://example.test/lead';
   let sent;
-  const original=globalThis.fetch;
-  globalThis.fetch=async(_url,opts)=>{sent=JSON.parse(opts.body);return {ok:true};};
+  const webhook=createServer(async(req,res)=>{
+    let body='';for await(const part of req) body+=part;
+    sent=JSON.parse(body);res.writeHead(200,{'content-type':'application/json'}).end('{"ok":true}');
+  });
+  await new Promise(resolve=>webhook.listen(0,'127.0.0.1',resolve));
+  process.env.LEAD_WEBHOOK_URL=`http://127.0.0.1:${webhook.address().port}/lead`;
   const mock=()=>({status(code){this.code=code;return this},json(value){this.value=value;return this}});
   try{
     let res=mock();await handler({method:'POST',body:{name:'Ana',phone:'(81) 99999-9999',procedure:'mastopexia',city:'Recife',consent:'on',utm_source:'meta',fbclid:'abc'}},res);
     assert.equal(res.code,200);assert.equal(sent.phone,'81999999999');assert.equal(sent.utm_source,'meta');assert.equal(sent.fbclid,'abc');
     res=mock();await handler({method:'POST',body:{name:'Ana',phone:'123',consent:'on'}},res);assert.equal(res.code,400);
     res=mock();await handler({method:'POST',body:{website:'bot'}},res);assert.equal(res.code,200);
-  }finally{globalThis.fetch=original;if(previous===undefined)delete process.env.LEAD_WEBHOOK_URL;else process.env.LEAD_WEBHOOK_URL=previous;}
+  }finally{webhook.close();if(previous===undefined)delete process.env.LEAD_WEBHOOK_URL;else process.env.LEAD_WEBHOOK_URL=previous;}
 });
